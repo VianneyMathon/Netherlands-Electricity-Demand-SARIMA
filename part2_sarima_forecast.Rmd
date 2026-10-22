@@ -1,0 +1,744 @@
+---
+title: "Analyse et prédiction de la demande d'électricité : cas des Pays-Bas"
+subtitle: "Projet d'économétrie des séries temporelles - Partie 2"
+author: "Vianney MATHON"
+date: "Février 2026 - Master IREF"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+    theme: readable
+---
+
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,700;1,400&family=Montserrat:wght@400;700&display=swap');
+
+body {
+    background-color: #f4f6f7;
+    font-family: 'Lora', serif;
+    font-size: 16px;
+    color: #333333;
+    line-height: 1.7;
+}
+
+.main-container {
+    max-width: 1400px !important;
+    margin-left: auto !important;
+    margin-right: auto !important;
+    padding-left: 50px !important;
+    padding-right: 20px !important;
+}
+
+div.row {
+    display: flex;
+    flex-direction: row-reverse; 
+}
+
+div.col-md-9 {
+    background-color: #ffffff;
+    padding: 50px;
+    border: 1px solid #e1e4e8;
+    border-radius: 8px;
+    box-shadow: 0 4px 15px rgba(0,0,0,0.03);
+    margin-right: 30px;
+}
+
+#TOC {
+    margin-top: 0px;
+    font-family: 'Montserrat', sans-serif;
+    font-size: 13px;
+    border: 1px solid #e1e4e8;
+    background: #ffffff;
+    border-radius: 8px;
+    padding: 15px;
+    width: 300px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.02);
+}
+
+.toc-content {
+    padding-left: 0;
+}
+
+.list-group-item.active {
+    background-color: #007bff !important;
+    border-color: #007bff !important;
+    font-weight: bold;
+}
+.list-group-item {
+    padding: 8px 10px;
+}
+
+#header {
+    text-align: center;
+    border-bottom: 2px solid #ecf0f1;
+    padding-bottom: 30px;
+    margin-bottom: 40px;
+    width: 100%;
+}
+
+h1.title {
+    font-family: 'Montserrat', sans-serif;
+    font-weight: 700;
+    font-size: 2.5em;
+    color: #007bff;
+}
+
+h4.author, h4.date {
+    font-family: 'Montserrat', sans-serif;
+    color: #7f8c8d;
+    margin-top: 10px;
+    font-size: 1.1em;
+}
+
+h1, h2, h3 {
+    font-family: 'Montserrat', sans-serif;
+    color: #2c3e50;
+    font-weight: 700;
+    margin-top: 40px;
+}
+</style>
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+```
+
+# Importation des données et rappel des résultats de la partie 1
+
+```{r}
+tab<-read.csv("data/ember_monthly_netherlands.csv",na.strings = "", stringsAsFactors = FALSE,  encoding = "UTF-8")
+
+data_nl<-subset(tab, Area=="Netherlands", select = c(Date,Variable,Value,Unit))
+
+head(data_nl)
+```
+
+Les tests de racine unitaire du Projet 1 ont déterminé de quelle nature est le PGD. Le test de Lee et Strazicich avec une date de rupture donne un PGD DS comme résultat. La date de rupture est en février 2022 avec un changement structurel dans le niveau et la pente de la série.  
+C'est un résultat cohérent car cette date coïncide avec le début de la guerre en Ukraine ayant eu pour impact une hausse drastique du prix de l'électricité et comme conséquence un changement dans le comportement de la demande.
+
+Voici le chronogramme de la série.
+
+```{r}
+demande_nl <- subset(data_nl,Variable=="Demand",select=Value)
+ts_demande <- ts(demande_nl, start = c(2015, 1), frequency = 12)
+
+plot.ts(ts_demande,
+        main = "Evolution de la demande d'électricité",
+        ylab = "Consommation (TWh)",
+        xlab = "Année",
+        col = "blue",
+        lwd = 2,
+        las = 1)
+grid()
+abline(lm((ts_demande ~time(ts_demande))))
+```
+
+On reprend la série différenciée à l'ordre 12 qui avait été créée pour enlever la saisonnalité.
+
+```{r}
+d12demande <- diff(ts_demande,12)
+```
+
+Maintenant que nous connaissons la nature du PGD, nous pouvons procéder à la suite.
+
+# Différentiation et tests de présence de deuxième racine unitaire
+
+Comme nous avons un PGD DS, il faut différencier à l'ordre 1 pour obtenir un PGD stationnaire.
+
+```{r}
+dX <- diff(d12demande)
+```
+
+Pour vérifier si cette série nouvellement différenciée est bien issue d'un PGD stationnaire, effectuons les tests de racine unitaire pour tester la présence d'une potentielle deuxième racine unitaire.
+
+Commençons par Dickey-Fuller avec la spécification trouvée : none.  
+Equation estimée par les MCO : $$\Delta y_t = (\rho-1) y_{t-1} + \epsilon_t$$
+Nos hypothèses :  
+- $H_0 : \rho-1 = 0$ le PGD est DS.  
+- $H_a : |\rho| < 1$ le PGD est stationnaire.
+
+```{r}
+library(urca)
+
+summary(ur.df(dX,type = "none",lags = 0))
+```
+
+La statistique de test étant inférieure à la valeur du seuil critique de 5%, on rejette l'hypothèse nulle. Le PGD n'est pas DS. Comme il n'est pas TS, on en conclut qu'il est stationnaire selon Dickey-Fuller.
+
+Regardons maintenant si les aléas du modèle ($\epsilon_t$) sont autocorrélés et par conséquent si ce résultat est correcte.
+
+Analysons l'ACF et le PACF.  
+$\rho_k = \gamma_k / \gamma_0$
+
+```{r}
+plot(ur.df(dX,type = "none",lags = 0))
+```
+
+On observe que les coefficients associés au retard 3 et 12 sont significatifs. Les aléas sont donc autocorrélés.  
+
+Cherchons le nombre de termes de retards maximal à inclure grâce à la formule de Schwert puis minimisons le critère d'information BIC (car le MAIC donne pmax = 0).
+
+```{r}
+library(CADFtest)
+
+T <- length(dX)
+pmax <- as.integer(12*(T/100)^(0.25))
+
+summary(CADFtest(dX,criterion="BIC",type="none",max.lag.y=pmax))
+```
+Le test CADF nous indique un terme de retard à inclure.  
+Procédons maintenant au test Dickey-Fuller Augmenté avec un terme de retard.  
+L'équation testée est maintenant : $$\Delta y_t = (\rho-1) y_{t-1} + \gamma \Delta y_{t-1} + \epsilon_t$$  
+Nos hypothèses :  
+- $H_0 : \rho-1 = 0$  le PGD est DS.  
+- $H_a : |\rho| < 1$ le PGD est stationnaire.
+
+```{r}
+summary(ur.df(dX,type = "none",lags = 1))
+```
+
+On observe que $\gamma$ est significatif. La statistique de test est inférieure à la valeur du seuil critique de 5%, on rejette l'hypothèse nulle, le PGD n'est pas DS. On conclut là aussi que notre PGD est stationnaire.
+
+Enchaînons avec le test de Zivot & Andrews nous permettant de détecter une date de rupture. La bonne spécification est intercept.  
+$$y_t = \beta_0 + \beta_1 tendance_t + \rho y_{t-1} + \delta DU_t(T_B) + \gamma \Delta y_{t-1} + \epsilon_t $$
+
+Nos hypothèses :  
+- $H_0 : \rho = 1$ le PGD est DS sans date de rupture.  
+- $H_a : |\rho| < 1$ le PGD est TS avec une date de rupture ou stationnaire si $\beta_1$ n'est pas significatif ou si $|\rho|$ > 1.
+
+```{r}
+summary(ur.za(dX,model = "intercept",lag = 1))
+```
+
+Le coefficient $\delta$ associé à la variable de changement structurel n'est pas significatif.
+
+Le coefficient : $\gamma$ est inférieur à 0,1 donc significatif.
+
+Le coefficient $\beta_1$ n'est pas significatif donc la série ne peut pas être TS.
+
+La statistique de test étant inférieure à la valeur du seuil critique de 5%, on rejette l'hypothèse nulle. Le PGD n'est pas DS non plus, il est donc stationnaire selon le test Zivot & Andrews.
+
+Procédons au test de Lee et Strazicich avec une date de rupture.  
+Nous avons assez de données pour ne pas avoir recourt à la méthode bootstrap.
+
+Comme nous avons utilisé la spécification intercept dans ZA, nous utilisons crash ici.
+
+Nos hypothèses :  
+$$H_0 : y_t =µ_0 + d_1B_{1t} + d_2B_{2t} + y_{t-1} + v_{1t}$$ Le PGD est DS.
+$$H_a : y_t =µ_1 + γ ∗ trend_t + d_1D_{1t} + d_2D_{2t} + v_{2t}$$ Le PGD est TS ou stationnaire.
+
+```{r}
+source("R/LeeStrazicichUnitRoot/LeeStrazicichUnitRootTest.R")
+myBreaks <- 1
+myModel <- "crash"
+myLags <- 1
+myLS_test <- ur.ls(y=dX , model = myModel, breaks = myBreaks, lags = myLags, method = "GTOS",pn = 0.1, print.results = "print" )
+```
+La statistique de test étant inférieure à la valeur du seuil critique de 5%, on rejette l'hypothèse nulle. Le PGD est ni DS ni TS, il est donc stationnaire selon le test LS avec une date de rupture.  
+
+La date de rupture potentielle indiquée est celle en position 58, ce qui correspond à :
+
+```{r}
+breakpoint <- as.yearmon(time(dX))
+breakpoint[58]
+```
+
+Novembre 2020 correspond à la période de fin de confinement. La série a été perturbée à cette période. Regardons à nouveau le chronogramme à cette date.
+
+```{r}
+plot.ts(ts_demande,
+        main = "Evolution de la demande d'électricité",
+        ylab = "Consommation (TWh)",
+        xlab = "Année",
+        col = "blue",
+        lwd = 2,
+        las = 1)
+grid()
+abline(v = time(dX)[58], col = "red")
+```
+
+On observe effectivement un changement notable du comportement de la série à partir de Novembre 2020. La fin du confinement marquée par la relance de l'activité industrielle implique une hausse de la demande en électricité. Celle-ci grimpe jusqu'à atteindre un record en Décembre 2020 et l'amplitude des baisses et hausses saisonnales est réduite à partir de cette période.  
+Nous retiendrons Novembre 2020 comme une date clé pour notre série.
+
+# Détection et modélisation de l'autocorrélation de la série stationnaire
+
+Débutons la phase de détection d'autocorrélation dans la série stationnaire, c'est-à-dire celle qui a été différenciée deux fois.  
+Premier résultat graphique avec l'ACF et le PACF.
+
+```{r}
+acf(dX)
+pacf(dX)
+```
+
+Si on observe le PACF, on remarque une présence d'autocorrélation avec les termes de retard d'ordre 1,2, 9 et 10.
+
+Testons cette autocorrélation avec le test Ljung-Box.  
+Nos hypothèses :  
+$H_0 : \rho_1 = \rho_2 = ... = \rho_m = 0$  
+Toutes les autocorrélations jusqu'au retard m sont nulles.  
+$H_a : \exists \, k \in \{1, \dots, m\} \mid \rho_k \neq 0$  
+Il existe au moins une autocorrélation non nulle parmi les m premiers retards.
+
+Regardons à l'ordre 1 :
+
+```{r}
+Box.test(dX,lag=1,type = "Ljung-Box")
+```
+
+La p-value étant inférieure à 0.05, on rejette $H_0$, $\rho_1$ est significatif, il y a de l'autocorrélation à l'ordre 1 dans notre série comme le montre également le PACF.
+
+Nous utilisons désormais la fonction d'autocorrélation étendue (EACF) pour identifier les ordres (p, q) optimaux du modèle ARMA à estimer afin de modéliser cette autocorrélation. 
+
+```{r}
+library(forecast)
+library(lmtest)
+library(TSA)
+
+eacf(dX)
+```
+
+Une fois l'ordre $(2,12)$ identifié grâce à la matrice EACF, nous procédons à l'estimation des paramètres du modèle afin d'en évaluer la significativité statistique et la qualité d'ajustement.
+
+```{r}
+reg <- Arima(dX, order = c(2,0,12))
+coeftest(reg)
+```
+
+Les coefficients associés aux variables $\phi_1$, $\phi_2$ et $\theta_{12}$ sont significatifs. Cependant les autres ne le sont pas.  
+Pour affiner nos tests, nous nous débarrassons de la constante car elle n'est pas significative puis du coefficient avec la p-value la plus élevée. Nous continuerons à retirer les variables dont les coefficients ne sont pas significatifs jusqu'à n'avoir que des variables avec des coefficients significatifs.
+
+```{r}
+reg <- Arima(dX, order = c(2,0,12), include.mean = FALSE, 
+             fixed = c(NA,NA,NA,NA,NA,NA,NA,NA,0,NA,NA,NA,NA,NA))
+coeftest(reg)
+```
+
+```{r}
+reg <- Arima(dX, order = c(2,0,12), include.mean = FALSE, 
+             fixed = c(NA,NA,0,0,0,0,0,0,0,0,0,0,NA,NA))
+coeftest(reg)
+```
+
+Voici les variables obtenues après élimination une par une (cf. Annexe). On retient donc p = 2 et q =12.  
+Ce qui nous donne l'équation suivante pour notre série différenciée deux fois :  
+$$Y_t = \phi_1 Y_{t-1} + \phi_2 Y_{t-2} + \theta_{11} \epsilon_{t-11} + \theta_{12} \epsilon_{t-12} + \epsilon_t$$
+
+## Tests sur les aléas
+
+Pour savoir si notre modèle a capté toute l'information, on vérifie maintenant si les aléas sont un bruit blanc.  
+
+Testons si la distribution des aléas est gaussienne avec le test de Jarque-Bera.  
+Hypothèses :  
+$H_0$ : les aléas sont normalement distribués.  
+$H_1$ : les aléas ne sont pas normalement distribués.  
+
+```{r}
+jarque.bera.test(reg$res)
+```
+
+La p-value est inférieure à 0.05, on rejette l'hypothèse nulle, les aléas ne sont pas normalement distribués.  
+L'intervalle de confiance autour de nos futurs prédictions ne sera pas fiable.
+
+Testons si leur espérance est nulle ou non, l'espérance d'un bruit blanc étant nulle.  
+Hyptohèses :  
+$H_0 : E(\epsilon) = 0$  
+$H_a : E(\epsilon) ≠ 0$
+
+```{r}
+t.test(reg$res)
+```
+
+La p-value étant nettement supérieure à 0.05, nous ne rejetons pas l'hypothèse nulle. L'espérance des résidus est nulle.
+
+Nous devons maintenant vérifier l'autocorrélation des aléas. On les normalise.
+
+Regardons graphiquement : 
+
+```{r}
+res=(reg$res-mean(reg$res))/sd(reg$res)
+acf(res)
+pacf(res)
+```
+
+Nous n'observons aucune autocorrélation dans les aléas sur les deux corrélogrammes.
+
+Poursuivons avec le test Ljung-Box.  
+Rappel :  
+$H_O$ : Toutes les autocorrélations jusqu'au retard m sont nulles.  
+$H_a$ : Il existe au moins une autocorrélation non nulle parmi les m premiers retards.  
+Pour le premier terme de retard :
+
+```{r}
+Box.test(res,lag=1,type = "Ljung-Box")
+```
+
+La p-value est supérieure à 0.05, on ne rejette pas l'hypothèse nulle, les aléas ne sont pas autocorrélés à l'odre 1.  
+On continue jusqu'à trouver une autocorrélation avec un terme de retard.
+
+```{r}
+Box.test(res,lag=10,type = "Ljung-Box")
+```
+
+Après avoir testé toutes les valeurs de lag jusqu'à 15, nous n'avons pas trouvé d'autocorrélation.  
+Nous pouvons donc conclure, grâce aux corrélogrammes et au test Ljung-Box, qu'il n'y a pas d'autocorrélation dans les aléas de notre série.
+
+Testons la dernière condition pour que nos aléas soient un bruit blanc : sont-ils conditionnellement homoscédastiques ? Y a-t-il des clusters de volatilité ?  
+Premier résultat graphique : le PACF sur les résidus au carré.
+
+```{r}
+pacf(reg$res^2)
+```
+
+Le fait qu'il n'y ait pas d'autocorrélation sur ce graphe est un signe qu'il n'y a pas de cluster de volatilité dans les aléas.
+
+Appliquons maintenant le test ARCH-LM pour chaque retard entre 1 et 30.   
+$H_0$ : il n'y a pas de cluster de volatilité.  
+$H_a$ : il y a un cluster de volatilité au retard dont la p-value est significative.
+
+```{r}
+library(FinTS)
+
+K <- 30
+temp <- rep(0,K)
+for(i in 1:K) {
+  temp[i] <- ArchTest(res, lag = i)$p.value
+}
+temp
+```
+
+Aucune des p-value n'est supérieure à 0.05, on ne rejette pas l'hypothèse nulle, il n'y a pas de cluster de volatilité dans les aléas de la série comme l'avait décrit le PACF.
+
+Les hyptohèses d'un bruit blanc sont donc respectées :  
+- $E(\epsilon) = 0$  
+- les aléas ne sont pas autocorrélés  
+- les aléas sont conditionnellement homoscédastiques  
+
+
+## Conclusion sur le modèle
+
+Les aléas de notre série stationnaire différenciée deux fois sont un bruit blanc, note modèle a réussi à capter toute l'information.
+Le modèle $ARMA_{(2,12)}$ est retenu pour cette série.
+
+Aperçu des prévisions sur la série différenciée à l'ordre 12 puis à l'ordre 1.
+
+```{r}
+prev <- forecast(reg,level = 0.95)
+plot(prev)
+```
+
+# Intégration de la racine unitaire
+
+Nous procédons désormais à l'intégration de l'ordre d=1 afin de restituer la dynamique de la série simplement différenciée à l'ordre 12. On continue donc avec notre série différenciée à l'ordre 12 seulement. Nous avons maintenant un modèle $ARIMA_{(2,1,12)}$ suite à l'intégration de la racine unitaire.
+
+Vérifions la significativité des coefficients trouvés précédemment.
+
+```{r}
+reg1 <- Arima(d12demande, order = c(2,1,12), include.mean = FALSE, 
+             fixed = c(NA,NA,0,0,0,0,0,0,0,0,0,0,NA,NA))
+coeftest(reg1)
+```
+
+Tous les coefficients sont encore significatifs.  
+
+Vérifions si les aléas sont également un bruit blanc sur cette série.  
+Après les avoir normalisé, on commence par tester si leur espérance est nulle.
+
+```{r}
+res1=(reg1$res-mean(reg1$res))/sd(reg1$res)
+t.test(res1)
+```
+
+La p-value est supérieure à 0.05, on ne rejette pas l'hypothèse nulle, l'espérance des aléas est nulle.
+
+On teste maintenant si il y a de l'autocorrélation parmi ces derniers.
+
+```{r}
+Acf(res1)
+pacf(res1)
+```
+
+Les corrélogrammes indiquent une absence d'autocorrélation. Poursuivons avec le test Ljung-Box.
+
+```{r}
+Box.test(res1,lag=1,type = "Ljung-Box")
+Box.test(res1,lag=10,type = "Ljung-Box")
+```
+
+Le test Ljung-Box confirme qu'il n'y a pas d'autocorrélation.  
+
+Vérifions s'ils sont conditionnellement homoscédastiques avec le lest Arch.
+
+```{r}
+K <- 30
+temp <- rep(0,K)
+for(i in 1:K) {
+  temp[i] <- ArchTest(res1, lag = i)$p.value
+}
+temp
+```
+
+
+Aucune p-value est inférieure à 0.05, on ne rejette jamais l'hypothèse nulle pour chaque terme de retard. Les aléas sont conditionnellement homoscédastiques.
+
+Evaluons si leur distribution est gaussienne avec le test Jarque Bera.
+
+```{r}
+jarque.bera.test(res1)
+```
+
+On rejette l'hypothèse nulle, la distribution des aléas n'est pas gaussienne.
+
+Toutes les conditions étant réspectées, on en conclut que sur cette série également, les aléas sont un bruit blanc.  
+
+Aperçu graphique des prévisions sur la série différenciée à l'ordre 12.
+
+```{r}
+prev<-forecast(reg1,level=0.95)
+plot(prev)
+```
+
+# Intégration de la saisonnalité
+
+Nous sommes bientôt rendus à notre objectif, les prévisions sur la série brute.
+
+Nous avons pris en compte la racine unitaire en revenant sur la série différenciée à l'ordre 12.  
+
+En revenant à notre série initiale, on doit maintenant modéliser sa saisonnalité.  
+
+Nous avions un $ARIMA_{(2,1,12)}$ mais en intégrant la saisonnalité, on passe à un modèle $SARIMA_{(2,1,12)(P,D,Q)s=12}$. Il nous reste à déterminer les bons paramètres pour la partie saisonnière de la série.
+
+Commençons par déterminer D.
+
+```{r}
+Acf(ts_demande,lag.max=120)
+```
+
+On se focalise sur les termes de retard qui sont multiples de 12. On remarque que les significativités des autocorrélations avec ces termes ne tendent pas rapidement vers 0 (seulement à partir du 96ème terme de retard).
+
+Donc on en conclut que D=1.
+
+Modélisons la série brute. On repart de notre modèle $ARIMA_{(2,1,12)}$ en y intégrant une partie saisonnière. On commence par tester un modèle $SARIMA_{(2,1,12)(1,1,1)s=12}$.
+
+```{r}
+reg2 <- Arima(ts_demande, order = c(2,1,12), include.mean = FALSE,
+              fixed=c(NA,NA,0,0,0,0,0,0,0,0,0,0,NA,NA,NA,NA),
+              seasonal=list(order=c(1,1,1),period=12))
+coeftest(reg2)
+```
+
+Les nouveaux coefficients liés à la partie saisonnière introduits ne sont pas significatifs.  
+On augmente notre test sur un modèle $SARIMA_{(2,1,12)(2,1,2)s=12}$ et si les coefficients ne sont toujours pas significatifs, on continue d'augmenter les valeurs de P et Q.
+
+Après de nombreux essais, on trouve le modèle suivant :
+
+```{r}
+reg2 <- Arima(ts_demande, order = c(2,1,12), include.mean = FALSE,
+              fixed=c(NA,NA,0,0,0,0,0,0,0,0,0,0,NA,NA,NA,NA,NA,NA,NA,NA,NA),
+              seasonal=list(order=c(4,1,3),period=12))
+coeftest(reg2)
+```
+
+Tous les coefficients sont significatifs. Cela nous donne un modèle $SARIMA_{(2,1,12)(4,1,3)s=12}$.
+
+Testons si les aléas de la série brute sont un bruit blanc.  
+
+Test de l'espérance : 
+
+```{r}
+res2=(reg2$res-mean(reg2$res))/sd(reg2$res)
+t.test(res2)
+```
+
+On ne rejette pas l'hypothèse nulle, l'espérance des aléas est nulle.
+
+Test de l'autocorrélation des aléas :
+
+```{r}
+acf(res2)
+pacf(res2)
+```
+
+Les corrélogrammes n'affichent aucune autocorrélation entre les aléas.
+
+Test de Ljung-Box pour confirmer ce résultat :
+
+```{r}
+Box.test(res2,lag=1,type = "Ljung-Box")
+Box.test(res2,lag=10,type = "Ljung-Box")
+```
+
+On rejette l'hypothèse nulle dans les deux cas, les aléas ne sont pas autocorrélés.
+
+Test sur l'homoscédasticité conditionnelle :
+
+```{r}
+K <- 30
+temp <- rep(0,K)
+for(i in 1:K) {
+  temp[i] <- ArchTest(reg2$res, lag = i)$p.value
+}
+temp
+```
+
+Toutes les p-values sont supérieures à 0.05, on ne rejette jamais l'hypothèse nulle, les aléas sont conditionnellement homoscédastiques.
+
+Test sur la normalité de la distribution des aléas : 
+
+```{r}
+jarque.bera.test(res2)
+```
+
+On rejette l'hypothèse nulle, les aléas ne sont pas normalement distribués. Les intervalles de confiance de nos prévisions finales ne sont pas fiables.
+
+Les condtions sont remplies, les aléas sont un bruit blanc, notre modèle $SARIMA_{(2,1,12)(4,1,3)s=12}$ a réussi à capter toute l'information.
+
+# Prévisions finales
+
+Nous pouvons finalement réaliser nos prévisions sur la demande en électricité aux Pays-Bas à l'aide de notre modèle $SARIMA_{(2,1,12)(4,1,3)s=12}$.
+
+Voici les prévisions graphiquement.
+
+```{r}
+prev<-forecast(reg2,level=0.95)
+plot(prev)
+```
+
+Les valeurs précises sont : 
+
+```{r}
+prev
+```
+
+
+## Synthèse et Discussion des Résultats de Prévision
+
+L’analyse du graphique de prévision démontre que le modèle $SARIMA_{(2,1,12)(4,1,3)s=12}$ capture avec une précision remarquable la dynamique saisonnière de la demande électrique. La trajectoire centrale reproduit fidèlement les cycles historiques, validant l'efficacité des composantes de différenciation.
+
+**Parsimonie et Significativité :** Bien que le modèle utilise des ordres élevés, l'approche par élagage a permis de ne conserver que 11 paramètres, tous hautement significatifs. Cette sélection rigoureuse assure que chaque terme contribue réellement à la réduction de la variance résiduelle.  
+**Analyse de l'incertitude :** L'élargissement des intervalles de confiance à mesure que l'horizon s'éloigne reflète l'accumulation naturelle de l'incertitude lors d'une projection à plus de deux ans. C'est une observation questionnable compte tenu du fait que les aléas ne soient pas normalement distribués.
+
+**Conclusion :** Ce modèle constitue un excellent compromis entre complexité et précision. Il offre une vision claire des cycles de demande, tout en restant statistiquement robuste.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Annexe
+
+## Tests de racine unitaire
+
+Voici les résultats pour Dickey-Fuller avec les spécifications trend et drift.  
+Equation estimée par les MCO : $$\Delta y_t = \beta_0 + \beta_1 tendance_t + (\rho-1) y_{t-1} + \epsilon_t$$   
+Nos hypothèses :  
+- $H_0 : \rho - 1 = 0$ et $\beta_1 = 0$  
+- $H_a : |\rho| < 1$ et $\beta_1 ≠ 0$
+
+```{r}
+summary(ur.df(dX,type = "trend",lags = 0))
+```
+
+$\beta_1$ n'étant pas significatif, trend n'est pas la bonne spécification. Le PGD n'est pas TS. 
+Procédons au test avec drift.  
+Equation estimée : $$\Delta y_t = \beta_0 + (\rho-1) y_{t-1} + \epsilon_t$$  
+Nos hypothèses :
+- $H_0 : \rho - 1 = 0$ et $\beta_0 = 0$  
+- $H_a : |\rho| < 1$ et $\beta_0 ≠ 0$
+
+```{r}
+summary(ur.df(dX,type = "drift",lags = 0))
+```
+
+$\beta_0$ n'étant pas significatif, la spécification drift n'est pas la bonne non plus.  
+None est donc la bonne spécification.
+
+Voici le test ZA avec la spécification la plus complète : both et en gardant notre terme de retard.
+$$y_t = \beta_0 + \beta_1 tendance_t + \rho y_{t-1} + \delta_1 DU_t(T_B) + \delta_2 DT_t(T_B) + \gamma \Delta y_{t-1} + \epsilon_t $$
+
+Nos hypothèses :  
+- $H_0 : \rho = 1$ le PGD est DS sans date de rupture.  
+- $H_a : |\rho| < 1$ le PGD est TS avec une date de rupture ou stationnaire si $\beta_1$ n'est pas significatif ou si $|\rho|$ > 1.
+
+```{r}
+summary(ur.za(dX,model = "both",lag = 1))
+```
+
+Le coefficient associé à dt n'est pas significatif. Both n'est donc pas la bonne spécification.
+
+
+## Tests des coefficients ARMA sur la série stationnaire
+
+```{r}
+reg <- Arima(dX, order = c(2,0,12), include.mean = FALSE, 
+             fixed = c(NA,NA,NA,0,NA,NA,NA,NA,0,NA,NA,NA,NA,NA))
+coeftest(reg)
+```
+
+```{r}
+reg <- Arima(dX, order = c(2,0,12), include.mean = FALSE, 
+             fixed = c(NA,NA,NA,0,NA,NA,NA,NA,0,0,NA,NA,NA,NA))
+coeftest(reg)
+```
+
+```{r}
+reg <- Arima(dX, order = c(2,0,12), include.mean = FALSE, 
+             fixed = c(NA,NA,NA,0,NA,NA,NA,NA,0,0,0,NA,NA,NA))
+coeftest(reg)
+```
+
+```{r}
+reg <- Arima(dX, order = c(2,0,12), include.mean = FALSE, 
+             fixed = c(NA,NA,NA,0,NA,NA,NA,NA,0,0,0,0,NA,NA))
+coeftest(reg)
+```
+
+```{r}
+reg <- Arima(dX, order = c(2,0,12), include.mean = FALSE, 
+             fixed = c(NA,NA,NA,0,NA,NA,NA,0,0,0,0,0,NA,NA))
+coeftest(reg)
+```
+
+```{r}
+reg <- Arima(dX, order = c(2,0,12), include.mean = FALSE, 
+             fixed = c(NA,NA,0,0,NA,NA,NA,0,0,0,0,0,NA,NA))
+coeftest(reg)
+```
+
+```{r}
+reg <- Arima(dX, order = c(2,0,12), include.mean = FALSE, 
+             fixed = c(NA,NA,0,0,0,NA,NA,0,0,0,0,0,NA,NA))
+coeftest(reg)
+```
+
+```{r}
+reg <- Arima(dX, order = c(2,0,12), include.mean = FALSE, 
+             fixed = c(NA,NA,0,0,0,0,NA,0,0,0,0,0,NA,NA))
+coeftest(reg)
+```

@@ -1,0 +1,413 @@
+---
+title: "Analyse et prédiction de la demande d'électricité : cas des Pays-Bas"
+subtitle: "Projet d'économétrie des séries temporelles - Partie 1"
+author: "Vianney MATHON"
+date: "Février 2026 - Master IREF"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    theme: readable
+---
+
+<style>
+h1.title {
+  text-align: center; 
+  color: #0005FF;     
+  font-size: 30px;    
+}
+body {
+  text-align: justify;
+}
+</style>
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+```
+
+# Contextualisation de la production et de la demande d'électricité aux Pays-Bas
+
+Les Pays-Bas traversent une rupture structurelle dans leur production en électricité. Depuis octobre 2023, le gisement de gaz naturel de Groningue est définitivement fermé dù à l'augmentation de "séismes induits"; une sorte de petits tremblements de terre causés par l'exploitation du gisement. Ce dernier se plaçait parmis les gisements les plus importants au monde et représentait les trois-quarts de la production du pays. 
+<br>
+Quelles conséquences ? Depuis trois ans, les Pays-Bas se sont tournés vers les énergies renouvelables avec notamment l'éolien offshore et le solaire qui représentent aujourd'hui plus de 50% de la production. Des investissements colossaux ont été réalisés à cet égard, plaçant les Pays-Bas comme exportateurs d'électricité depuis 2022. Ces changements ne sont pas sans impact sur le prix de l'électricité et par conséquent sa demande.
+<br> <br>
+Outre la restructuration de la production d'électricité du pays, j'y vois un intérêt particulier en sa prévision également pour sa demande atypique. 
+<br>
+En effet, un dixième de cette dernière provient de l'agriculture (contre seulement 2% en France). Cela est dù à une activité horticole sous serre très énergivore. C'est un point très important pour l'analyse car contrairement au chauffage résidentiel, les agriculteurs sont très sensibles à la variation du prix de l'électricité. S'il dépasse leur seuil de rentabilité, ils arrêtent de chauffer et éclairer leurs serres. Cela crée des cassures lorsque les prix flambent, induisant des cycles saisonniers qui se superposent aux cycles classiques.
+<br> <br>
+La situation géographique des Pays-Bas, plaque tournante entre l'Allemagne, la Belgique, la Norvège ou encore le Royaume-Uni, rend le pays particulièrement sensible aux chocs macroéconomiques européens, impliquant une certaine volatilité sur le prix de l'électricité et donc la demande.
+<br><br>
+Enfin, quelques mots sur ce qui compose la demande en électricité aux Pays-Bas, afin de mieux comprendre la série : <br>
+- **L'industrie** : 40% de la demande; c'est un pays avec une forte activité industrielle (chimie, pétrochimie notamment); ce segment, à l'instar des agriculteurs mentionnés plus tôt, est sensible au prix de l'électricité pour sa rentabilité. <br>
+- **Le tertiaire** : 30% de la demande; les data centers de Microsoft, Google et autres se situent proches d'Amsterdam et sont très énergivores, de manière constante.<br>
+- **Les ménages** : 20% de la demande; il y a une particularité concernant les ménages néerlandais : une densité en panneaux solaires par habitant énorme. Je n'ai pas encore déterminé si l'autoconsommation est prise en compte dans la série, ce sera l'objet d'une prochaine section. De plus, suite à la restructuration, les Néerlandais sont encouragés par l'Etat pour arrêter de se chauffer au gaz et passer aux pompes à chaleur électriques qui sont énergivores lorsque la météo ne les soutient pas, donc en hiver. Cela constitue un élément de plus pour observer de la saisonnalité dans la série. <br>
+- **L'agriculture** : 10% de la demande. <br>
+Le réseau est entièrement géré par TenneT, une entreprise 100% détenue par l'Etat.
+<br><br>
+En résumé, les Pays-Bas traversent une rupture structurelle majeure liée à la fermeture du gisement de Groningue et à l'essor des renouvelables, transformant le pays en exportateur net tout en exposant sa demande à une forte volatilité des prix. La série pourrait ainsi présenter une dynamique complexe, marquée par la sensibilité extrême des secteurs industriel et agricole aux coûts de l'énergie, ainsi qu'une saisonnalité renforcée par l'électrification du chauffage résidentiel.
+
+<br>
+
+# Importation et exploration des données
+
+Commençons par importer les données.
+```{r}
+tab<-read.csv("data/ember_monthly_netherlands.csv",na.strings = "", stringsAsFactors = FALSE,  encoding = "UTF-8")
+
+data_nl<-subset(tab, Area=="Netherlands", select = c(Date,Variable,Value,Unit))
+
+head(data_nl)
+```
+
+```{r}
+tail(data_nl)
+```
+Les données décrivent la demande et la production en électricité des Pays-Bas de janvier 2015 jusqu'en octobre 2025. <br>
+Elles ont une granularité mensuelle et offrent le détail du mix énergétique, c'est-à-dire quels types d'énergie sont produits sur le territoire néerlandais. On connaît également le montant d'électricité importé depuis les pays voisins et l'évolution du prix. <br>
+Avant de se lancer dans l'analyse et la prédiciton de la demande, utilisons les données pour étudier : <br>
+- **L'évolution du mix énergétique** : depuis 2015, le renouvelable a-t-il vraiment pris le dessus sur les énergies fossiles ? <br>
+- **Quantité produite vs demande** : les Pays-Bas sont-ils vraiment devenus exportateurs ? <br>
+- **L'évolution du prix de l'électricité** : cette variable nous aidera à mieux comprendre de potentiels chocs sur la demande.
+<br><br>
+
+Comparons, pour chaque mois, la répartition du type d'électricité produit aux Pays-Bas : **fossil vs clean**.
+```{r}
+library(ggplot2)
+
+mix_nl <- subset(data_nl, (Variable=="Clean" | Variable=="Fossil") & Unit=="%")
+mix_nl$Date <- as.Date(mix_nl$Date)
+
+ggplot(mix_nl, aes(x = Date, y = Value, color = Variable)) +
+  geom_line(size = 1) +
+  scale_color_manual(values = c("Clean" = "forestgreen", "Fossil" = "dimgrey")) +
+  geom_hline(yintercept = 50, linetype = "dashed", color = "black", alpha = 0.5) +
+  labs(title = "Evolution du mix énergétique : fossile vs renouvelable",
+       y = "Part du mix (%)",
+       x = "Année",) +
+  theme_minimal() +
+  theme(legend.position = "top")
+```
+
+Comme expliqué dans la partie 1, on observe bien que le renouvelable prend le dessus à partir de 2022, notamment suite à la fermeture progressive du gisement de Groninque. En 2025, il représente 60-70% de la production d'électricité aux Pays-Bas contre 20% en 2015.
+<br><br>
+
+Regardons maintenant si l'investissement massif dans le renouvelable a permis aux Pays-Bas d'être un pays exportateur d'électricité.
+
+```{r}
+imports_nl <- subset(data_nl,Variable=="Net Imports")
+imports_nl$Date <- as.Date(imports_nl$Date)
+imports_nl$Statut <- ifelse(imports_nl$Value > 0, "Importateur", "Exportateur")
+
+ggplot(imports_nl, aes(x = Date, y = Value, fill = Statut)) +
+  geom_col(width = 20) +
+  scale_fill_manual(values = c("Importateur" = "#d73027", 
+                               "Exportateur" = "#1a9850")) +
+  geom_hline(yintercept = 0, color = "black", size = 0.5) +
+    labs(title = "Solde des échanges commerciaux d'électricité",
+       y = "Solde Net (TWh)",
+       x = "Année",
+       fill = "Position du pays") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+Le graphique confirme l'évolution vers une position d'exportateur des Pays-Bas. Depuis 2020, ils poduisent globalement plus qu'ils ne consomment. Une nette augmentation des exports est notable depuis fin 2024.
+<br><br>
+
+Analysons maintenant l'évolution du prix auquel les néerlandais sont soumis pour leur consommation d'électricité depuis 2015.
+
+```{r}
+prix_nl <- subset(data_nl,Variable=="Day-ahead electricity price")
+prix_nl$Date <- as.Date(prix_nl$Date)
+
+ggplot(prix_nl, aes(x = Date, y = Value)) +
+  geom_line(color = "#e67e22", size = 1) +
+  labs(title = "Évolution du prix de l'électricité",
+       y = "Prix (EUR / MWh)",
+       x = "Année") +
+  theme_minimal()
+```
+
+Le prix est constant autour des 40-50 €/MWh jusqu'en 2021 puis une explosion du prix fin 2021 jusque 2023. Juste après la crise Covid, la reprise brutale de l'activité économique entraîne une pénurie mondiale d'électricité, faisant grimper les prix. En 2022, alors qu'il y avait déjà une pénurie, la guerre en Ukraine fait exploser les prix du gaz suite à la rupture en approvisionnement en gaz russe. Comme l'éolien ne suffit pas totalement aux Pays-Bas pour satisfaire l'ensemble de sa consommation, l'explosion du prix du gaz a un impact direct sur le coût de l'électricité car il est nécessaire pour satisfaire cette denrière. <br>
+A noter pour la suite de l'analyse : l'élasticité-prix de l'électricité des Pays-Bas étant particulièrement élevée car sa consommation concerne en grande partie les professionnels qui se soucient de leur rentabilité, on devrait observer des chocs sur la demande à ces périodes d'extrême volatilité des prix.
+
+# Chronogramme : identification des chocs, tendance et saisonnalité
+
+```{r}
+demande_nl <- subset(data_nl,Variable=="Demand",select=Value)
+ts_demande <- ts(demande_nl, start = c(2015, 1), frequency = 12)
+
+plot.ts(ts_demande,
+        main = "Evolution de la demande d'électricité",
+        ylab = "Consommation (TWh)",
+        xlab = "Année",
+        col = "blue",
+        lwd = 2,
+        las = 1)
+grid()
+abline(lm((ts_demande ~time(ts_demande))))
+```
+
+De 2015 à la fin 2019, la demande se ressemble d'une année à l'autre. Mais à partir de 2020, celle-ci se complexifie. <br>
+Sans surprise, le creux de l'année 2020 est plus important que les autres années. Cela est dù à la crise Covid, le confinement met à l'arrêt les ménages; les bureaux et commerces sont vides et les usines ralentissent. <br>
+A l'hiver 2021, comme décris précédemment, la reprise économique est conséquente, l'industrie cherche à rattraper son retard, donc la demande en électricité est à son maximum. L'été de la même année affiche une demande plus importante en raison de la reprise post-covid. <br>
+Puis à l'hiver 2022-2023, on observe une nette diminution de la demande. C'est l'effet élasticité-prix très présent aux Pays-Bas : la guerre en Ukraine fait exploser le prix de l'électricité, les industriels et agriculteurs se mettent à l'arrêt pour ne pas produire à perte. 
+
+**Saisonnalité** : la série affiche clairement une saisonnalité. On observe un motif régulier avec des pics en été et des creux en hiver, chaque année. Regardons plus précisemment comment s'organise cette saisonnalité avec un regard mois par mois.
+
+```{r}
+monthplot(ts_demande)
+```
+
+Ce monthplot met en avant les pics de demande en janvier et décembre en opposition au creux que représentent les mois de juin à septembre avec une amplitude totale de 2 TWh. On observe une variance plus importante sur les valeurs d'hiver témoignant de la sensibilité de la demande néerlandaise aux prix de l'électricité. L'effet météo (un mois de janvier doux vs un mois de janvier glacial) ainsi que l'explosion des prix en octobre 2022 notamment sont à l'origine de cette dispersion accrue sur les valeurs hivernales.
+
+**Tendance** :  concernant la tendance de la série, il est difficile de conclure à vue d'oeil.
+
+Etudions plus en profondeur la saisonnalité et la tendance de la série avec la fonction decompose. Je choisis la méthode additive car on peut plus ou moins encadrer les pics avec des droites parallèles.
+
+```{r}
+plot(decompose(ts_demande,type="additive"))
+```
+
+La fonction decompose nous confirme qu'il n'y a pas une tendance claire. Creusons un peu plus en testant la significativité statistique de la tendance.
+
+```{r}
+lm_demande <- lm(as.numeric(ts_demande) ~ time(ts_demande))
+summary(lm_demande)
+t.test(ts_demande)
+```
+
+Les tests statistiques confirment la complexité de la série.
+
+Absence de tendance déterministe linéaire : La régression linéaire sur le temps ne donne aucun résultat significatif (p-value = 0.813). L'hypothèse d'une augmentation ou d'une diminution constante et régulière de la demande sur la décennie est rejetée.  
+La série oscille autour d'une moyenne stable d'environ 10 TWh/mois (confirmée par le t-test).
+
+# Tests de racine unitaire
+
+## Dickey-Fuller
+
+Etudions maintenant si la série est stationnaire, TS ou DS.
+Pour cela, on teste la présence de racine unitaire. Commençons par utiliser le test de Dickey-Fuller classique. 
+
+Comme la série comporte de la saisonnalité on commence par la différencier à l'ordre 12.  
+Puis on applique le test Dickey-Fuller du package urca.  
+
+La bonne spécification pour notre série est "none" (cf. annexe).  
+Equation estimée par les MCO : $$\Delta y_t = (\rho-1) y_{t-1} + \epsilon_t$$
+Nos hypothèses :  
+- $H_0 : \rho-1 = 0$ le PGD est DS.  
+- $H_a : |\rho| < 1$ le PGD est stationnaire.
+
+```{r}
+library(urca)
+
+d12demande <- diff(ts_demande,12)
+
+summary(ur.df(d12demande,type = "none",lags = 0))
+```
+
+Pour déterminer si notre série est DS ou stationnaire, on compare la statistique de test t à la valeur critique pour notre seuil de significativité : on a -6.057 < -1.95.  
+On rejette l'hypothèse nulle, la série n'est pas DS, on a $|\rho| < 1$, il n'y a pas de racine unitaire.  
+Notre série est donc stationnaire selon le test de Dickey-Fuller classique.
+
+Cependant, ce résultat est faux si les aléas du modèle ($\epsilon_t$) sont autocorrélés. En effet, le test de Dickey-Fuller repose sur l'hypothèse que ces derniers sont un bruit blanc. Nous devons donc vérifier leur nature.
+
+Analysons les corrélogrammes ACF et PACF.
+
+```{r}
+plot(ur.df(d12demande,type = "none",lags = 0))
+```
+
+On observe sur les deux corrélogrammes un pic significatif au lag 12 et un moins important mais tout de même significatif au lag 3. Cela indique une information cruciale pour notre test : les aléas sont autocorrélés au retard 12 et à moindre mesure au lag 3. Ils "gardent en mémoire" les aléas du même mois de l'année précédente, l'hyptohèse de bruit blanc n'est donc pas respectée, le test Dickey-Fuller classique est biaisé.
+
+## Dickey-Fuller Augmenté
+
+Pour rectifier cela, on utilise le test de Dickey-Fuller Augmenté. Celui-ci ajoute des termes de retards de la variable différenciée à l'équation de test afin de blanchir les résidus et de garantir que la statistique de test ne soit pas biaisée par l'autocorrélation.  
+Cherchons le nombre de termes de retards maximal à inclure grâce à la formule de Schwert puis minimisons le critère d'information MAIC.
+
+```{r}
+library(CADFtest)
+
+T <- length(d12demande)
+pmax <- as.integer(12*(T/100)^(0.25))
+
+summary(CADFtest(d12demande,criterion="MAIC",type="none",max.lag.y=pmax))
+```
+
+Ces résultats nous indiquent que le lag 2 nous donnera le meilleur test Dickey-Fuller augmenté. Procédons au test en gardant la même spécification et en incluant le lag 2 en paramètre cette fois-ci.  
+L'équation testée est maintenant : $$\Delta y_t = (\rho-1) y_{t-1} + \gamma_1 \Delta y_{t-1} + \gamma_2 \Delta y_{t-2} + \epsilon_t$$  
+Nos hypothèses :  
+- $H_0 : \rho-1 = 0$  le PGD est DS.  
+- $H_a : |\rho| < 1$ le PGD est stationnaire.
+
+```{r}
+summary(ur.df(d12demande,"none", lags = 2))
+```
+
+Regardons d'abord la p-value du coefficient associé au plus grand retard : celle de $\gamma_2$. Elle est inférieure à 0,1. Cela signifie que nos deux variables additionnelles explicatives ont des coefficients significatifs et sont donc à retenir pour notre test Dickey Fuller Augmenté.  
+On regarde maintenant la statistique de test : -2.833 qui est inférieure à la valeur critique au seuil de 5% qui est de -1.95, donc on rejette l'hypothèse nulle, la série n'est pas DS. On en conclut que notre série est stationnaire selon le test de Dickey-Fuller Augmenté.
+
+Cependant, les tests Dickey-Fuller et Dickey-Fuller Augmenté sont imparfaits face à une série ayant subi des changements structurels, que ce soit dans le niveau ou la tendance de la série.
+
+## Test de Zivot & Andrews
+
+Le test ZA, quant à lui, teste la présence de racine unitaire en prenant en compte un potentiel changement structurel de la série. Un choc sur le niveau de la série est modélisé par la variable DU et un choc sur la pente de la série est modélisé par la variable DT.
+
+Procédons au test avec la spécification la plus complète : both et en gardant nos deux termes de retard.
+Equation estimée : 
+$$y_t = \beta_0 + \beta_1 tendance_t + \rho y_{t-1} + \delta_1 DU_t(T_B) + \delta_2 DT_t(T_B) + \gamma_1 \Delta y_{t-1} + \gamma_2 \Delta y_{t-2} + \epsilon_t $$
+
+Nos hypothèses :  
+- $H_0 : \rho = 1$ le PGD est DS sans date de rupture.  
+- $H_a : |\rho| < 1$ le PGD est TS avec une date de rupture ou stationnaire si $\beta_1$ n'est pas significatif ou si $|\rho|$ > 1.
+
+```{r}
+summary(ur.za(d12demande,model = "both",lag = 2))
+```
+
+Les coefficients $\delta_1$ et $\delta_2$ associés aux variables de changement structurel sont significatifs.
+
+Les coefficients : $\gamma_1$ et $\gamma_2$ sont inférieurs à 0,1 donc significatifs.
+
+Nous pouvons donc interpréter la statistique de test : -4,0595 > -5,08. Notre statistique de test est supérieure à la valeur du seuil critique à 5%. Nous ne rejetons pas l'hypothèse nulle, $\rho = 1$, il y a présence de racine unitaire. Notre série est donc DS sans changement structurel selon le test ZA. 
+
+```{r}
+plot(ur.za(d12demande,model = "both",lag = 2))
+```
+
+Ce graphique nous confirme qu'il n'y a probablement pas de changement structurel dans notre série car la statistique de test de descend jamais sous nos seuils de significativité.
+
+Jetons tout de même un oeuil à la potentielle date de rupture que le test mentionne : 71. 
+
+```{r}
+plot.ts(ts_demande,
+        main = "Evolution de la demande d'électricité",
+        ylab = "Consommation (TWh)",
+        xlab = "Année",
+        col = "blue",
+        lwd = 2,
+        las = 1)
+grid()
+abline(v = time(ts_demande)[71], col = "red")
+```
+
+Le test a identifié Novembre 2021 comme la date de rupture la plus probable à juste titre. C'est à cette période que la reprise de l'activité économique post-covid se déroule. La demande en électricité connaît une réelle augmentation soutenue par la suite par la guerre en Ukraine, d'où l'identification d'un potentiel choc ici.
+
+Le test de Zivot & Andrews possède en réalité certaines limites, notamment le fait que sous $H_0$, il n'autorise pas de changement structurel. De plus, il n'en autorise qu'un maximum.
+
+Pour palier à ces limites, introduisons un nouveau test.
+
+## Test de Lee et Strazicich
+
+Le test de Lee et Strazicich introduit un changement structurel à 2 dates possibles, sous l'hypothèse alternative mais aussi l'hypothèse nulle.
+
+Comme la bonne spécification dans le test ZA est "both", nous utilisons la spécification "break" dans le test LS. Je choisis le test avec une seule date de rupture car il est plus puissant que celui avec deux dates et au vu de l'évolution de la demande en électricité aux Pays-Bas depuis 2015, une seule date de rupture semble adaptée.  
+Nos hypothèses :  
+- $H_0$ : $\beta_1 = 1$. Le PGD est DS avec un changement structurel.  
+  Equation estimée : $$y_t = \mu_0 + d_1B_{1t} + d_2B_{2t} + d_3D_{1t} + d_4D_{2t} + y_{t-1} + v_{1t}$$  
+- $H_a$ : $\beta_1 < 1$. Le PGD est TS avec un changement structurel ou stationnaire si $\beta_1$ n'est pas significatif dans ZA ou si $|\rho|$ > 1 dans ZA.  
+  Equation estimée : $$y_t = \mu_1 + \gamma * trend_t + d_1D_{1t} + d_2D_{2t} + d_3DT_{1t} + d_4DT_{2t} + v_{2t}$$
+
+```{r}
+source("R/LeeStrazicichUnitRoot/LeeStrazicichUnitRootTest.R")
+myBreaks <- 1
+myModel <- "break"
+myLags <- 2
+myLS_test <- ur.ls(y=d12demande , model = myModel, breaks = myBreaks, lags = myLags, method = "GTOS",pn = 0.1, print.results = "print" )
+```
+
+La statistique de test vaut -3.356027. $\lambda$ estimé à 0,6 ce qui donne $T_B$ = 74.
+
+```{r}
+library(zoo)
+breakpoint <- as.yearmon(time(d12demande))
+breakpoint[74]
+```
+
+La date de rupture correspond au mois de Février 2022.  
+On prend la valeur critique pour $\lambda = 0,5$ car nous n'avons pas celle pour $\lambda = 0,6$.  
+La valeur critique au seuil de 5% est de -4.51 qui est inférieure à notre statistique de test -3.356027. On ne rejette pas $H_0$, il y a présence de racine unitaire, notre série est DS avec un changement structurel dans la pente et dans la constante en Février 2022.    
+Pour finir, deux termes de retard ont été introduits dans le modèle pour tenir compte de l'autocorrélation.
+
+## Conclusion
+
+Pour conclure, nous retenons les résultats du test de Lee et Strazicich avec une unique date de rupture. En effet, ce test est le plus puissant car il nous permet notamment de détecter un PGD DS avec date de rupture alors que ce résultat est impossible avec les autres tests. Une seule date de rupture sur ce test est choisie car elle semble plus adaptée à notre série.
+
+Par conséquent, voici les résultats des tests de racine unitaire sur notre série : 
+
+Notre série est DS avec un changement structurel dans la pente et dans la constante en Février 2022. C'est un résultat très cohérent au vu de la demande en électricité fortement perturbée à cette période suite au choc sur le prix du MWh dû à la guerre en Ukraine qui débute précisemment en Février 2022.
+
+Graphiquement, ces changements structurels sont visibles :
+
+```{r}
+plot.ts(ts_demande,
+        main = "Evolution de la demande d'électricité",
+        ylab = "Consommation (TWh)",
+        xlab = "Année",
+        col = "blue",
+        lwd = 2,
+        las = 1)
+grid()
+abline(v = time(ts_demande)[74], col = "red")
+```
+
+La série change de comportement à cette date représentée par la droite rouge. L'amplitude des pics est affaiblie, la saisonnalité d'avant Covid disparaît. On a donc bien un changement visible dans le niveau et la pente de notre série comme l'affirme le test LS.
+
+# Annexe
+
+## Dickey-Fuller
+
+Voici les détails des tests Dickey-Fuller avec les spécifications trend et drift, avec en premier lieu trend.  
+Equation estimée par les MCO : $$\Delta y_t = \beta_0 + \beta_1 tendance_t + (\rho-1) y_{t-1} + \epsilon_t$$   
+Nos hypothèses :  
+- $H_0 : \rho - 1 = 0$ et $\beta_1 = 0$  
+- $H_a : |\rho| < 1$ et $\beta_1 ≠ 0$
+
+```{r}
+summary(ur.df(d12demande,type = "trend",lags = 0))
+```
+
+Le coefficient $\beta_1$ associé à cette dernière a une p-value de 0.659, donc au-dessus de notre seuil de significativité de 0.05. On ne rejette donc pas l'hypothèse nulle : le coefficient associé à la tendance de notre série n'est pas significatif.
+
+Le modèle trend n'est donc pas la bonne spécification pour notre série. On continue notre test Dickey-Fuller avec le modèle drift.
+Equation estimée : $$\Delta y_t = \beta_0 + (\rho-1) y_{t-1} + \epsilon_t$$  
+Nos hypothèses :
+- $H_0 : \rho - 1 = 0$ et $\beta_0 = 0$  
+- $H_a : |\rho| < 1$ et $\beta_0 ≠ 0$
+
+```{r}
+summary(ur.df(d12demande,type = "drift",lags = 0))
+```
+
+Il s'agit maintenant de tester si le modèle avec la constante est adapté à notre série. Là encore, on observe que la p-value de cette dernière est supérieure au seuil de significativité. On ne rejette donc pas l'hypothèse nulle : la constante $\beta_0$ n'est pas significative.
+
+La bonne spécification pour notre série est none.
+
+## Lee et Strazicich
+
+Procédons au test LS avec deux dates de rupture. 
+
+```{r}
+myBreaks <- 2
+myModel <- "break"
+myLags <- 5
+myLS_test <- ur.ls(y=d12demande , model = myModel, breaks = myBreaks, lags = myLags, method = "GTOS",pn = 0.1, print.results = "print" )
+```
+
+Notre statistique de test est de -7,508418. Notre $\lambda_1 = 0,6$ et $\lambda_2 = 0,7$, ce qui donne respectivement $T_{B1} = 73$ et $T_{B2} = 88$. 
+
+```{r}
+breakpoint1 <- as.yearmon(time(d12demande))
+breakpoint[73]
+breakpoint2 <- as.yearmon(time(d12demande))
+breakpoint2[88]
+```
+
+Les dates de rupture seraient en Janvier 2022 et Avril 2023.  
+Pour un seuil critique de 5%, la valeur critique à l'intersection break1 = 0,6 et break2 = 0,7 serait une interpolation entre la valeur critique à l'intersection (break1 = 0.6, break2 = 0.6) et celle à l'intersection (break1 = 0.6, break2 = 0.8). Or, la valeur critique à l'intersection (break1 = 0.6, break2 = 0.6) est manquante. On garde donc la valeur critique de l'intersection (break1 = 0.6, break2 = 0.8) qui est -5.73.
+On a donc -7.508418 < -5.73, on rejette l'hypothèse nulle, notre série n'est pas DS.  
+Le $\beta_1$ du test ZA n'étant pas significatif, on en conclut que la série n'est pas TS. Elle est donc stationnaire selon le test LS avec deux dates de rupture.
+
+Cependant, le test LS avec une seule date de rupture supposée est plus puissant que celui avec deux dates et plus adapté à notre série. Par conséquent, nous gardons les résultats du premier test LS.
